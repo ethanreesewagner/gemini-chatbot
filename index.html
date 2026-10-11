@@ -1,0 +1,209 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Gemini Chat App</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>💬</text></svg>">
+<style>
+  :root { --bg:#fff; --fg:#1f2328; --muted:#888; --panel:#f6f7f9; --border:#e3e5e8; --accent:#1a73e8; --user:#e8f0fe; --bot:#f6f7f9; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#0e1117; --fg:#e6e6e6; --muted:#8b8f98; --panel:#161a22; --border:#2a2f3a; --accent:#8ab4f8; --user:#1d2b44; --bot:#1a1e27; }
+  }
+  * { box-sizing: border-box; }
+  body { margin:0; font:15px/1.5 system-ui, -apple-system, sans-serif; background:var(--bg); color:var(--fg); display:flex; height:100vh; }
+  aside { width:260px; flex-shrink:0; background:var(--panel); border-right:1px solid var(--border); padding:16px; display:flex; flex-direction:column; gap:8px; overflow-y:auto; }
+  aside h2 { font-size:16px; margin:0 0 4px; }
+  .chat-item { padding:8px 10px; border-radius:6px; cursor:pointer; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .chat-item.active { background:var(--accent); color:#fff; }
+  .chat-item:not(.active):hover { background:var(--border); }
+  hr { border:none; border-top:1px solid var(--border); width:100%; margin:8px 0; }
+  button, input, textarea { font:inherit; color:inherit; }
+  button { padding:7px 12px; border:1px solid var(--border); border-radius:6px; background:var(--bg); cursor:pointer; }
+  button:hover:not(:disabled) { border-color:var(--accent); }
+  button.primary { background:var(--accent); color:#fff; border-color:var(--accent); }
+  button:disabled { opacity:.5; cursor:default; }
+  input[type=text], textarea { width:100%; padding:7px 10px; border:1px solid var(--border); border-radius:6px; background:var(--bg); }
+  main { flex:1; display:flex; flex-direction:column; min-width:0; }
+  header { padding:16px 24px 8px; }
+  header h1 { margin:0; font-size:22px; }
+  header p { margin:4px 0 0; color:var(--muted); }
+  #messages { flex:1; overflow-y:auto; padding:8px 24px; display:flex; flex-direction:column; gap:10px; }
+  .msg { padding:10px 14px; border-radius:10px; white-space:pre-wrap; word-wrap:break-word; max-width:800px; }
+  .msg.user { background:var(--user); align-self:flex-end; }
+  .msg.assistant { background:var(--bot); }
+  .msg.system { color:var(--muted); font-style:italic; padding:0; }
+  .msg.error { color:#d93025; }
+  form { display:flex; gap:8px; padding:12px 24px 20px; border-top:1px solid var(--border); }
+  form textarea { resize:none; height:44px; }
+  #menu { display:none; }
+  @media (max-width: 700px) {
+    body { flex-direction:column; }
+    aside { width:100%; border-right:none; border-bottom:1px solid var(--border); max-height:50vh; }
+    aside:not(.open) > :not(#menu-row) { display:none; }
+    #menu { display:inline-block; }
+    header, #messages, form { padding-left:16px; padding-right:16px; }
+  }
+</style>
+</head>
+<body>
+<aside id="sidebar">
+  <div id="menu-row" style="display:flex;justify-content:space-between;align-items:center">
+    <h2>💾 Saved Chats</h2>
+    <button id="menu" type="button">☰</button>
+  </div>
+  <div id="chat-list"></div>
+  <button id="new-chat" type="button">New Chat</button>
+  <button id="delete-chat" type="button">Delete Selected Chat</button>
+  <hr>
+  <label for="rename">Rename selected chat</label>
+  <input id="rename" type="text">
+  <hr>
+  <button id="save" type="button">Save All Chats to File</button>
+  <button id="load" type="button">Load Chats from File</button>
+  <input id="load-file" type="file" accept=".json,application/json" hidden>
+</aside>
+
+<main>
+  <header>
+    <h1>💬 Gemini Chat App</h1>
+    <p>Chat with Google's Gemini 3.8 Flash! Create and manage multiple conversations.</p>
+  </header>
+  <div id="messages"></div>
+  <form id="chat-form">
+    <textarea id="input" placeholder="Type your message…" autofocus></textarea>
+    <button class="primary" id="send" type="submit">Send</button>
+  </form>
+</main>
+
+<script>
+const STORAGE_KEY = "gemini-chats";
+const SYSTEM_MSG = { role: "system", content: "You are a helpful assistant." };
+const $ = (id) => document.getElementById(id);
+
+let state = loadState();
+
+function loadState() {
+  try {
+    const s = JSON.parse(localStorage.getItem(STORAGE_KEY));
+    if (s && s.chats && s.chats[s.current]) return s;
+  } catch {}
+  return { chats: { default: { name: "Main Chat", history: [SYSTEM_MSG] } }, current: "default" };
+}
+
+function persist() {
+  try { localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); } catch {}
+}
+
+function render() {
+  const list = $("chat-list");
+  list.replaceChildren();
+  for (const [id, chat] of Object.entries(state.chats)) {
+    const el = document.createElement("div");
+    el.className = "chat-item" + (id === state.current ? " active" : "");
+    el.textContent = chat.name;
+    el.onclick = () => { state.current = id; persist(); render(); };
+    list.append(el);
+  }
+  const chat = state.chats[state.current];
+  $("rename").value = chat.name;
+  $("delete-chat").disabled = Object.keys(state.chats).length <= 1;
+
+  const box = $("messages");
+  box.replaceChildren();
+  for (const m of chat.history) {
+    const el = document.createElement("div");
+    el.className = "msg " + m.role + (m.error ? " error" : "");
+    el.textContent = m.role === "user" ? m.content : m.role === "assistant" ? "🤖 " + m.content : m.content;
+    box.append(el);
+  }
+  box.scrollTop = box.scrollHeight;
+}
+
+$("menu").onclick = () => $("sidebar").classList.toggle("open");
+
+$("new-chat").onclick = () => {
+  const id = crypto.randomUUID().slice(0, 8);
+  const n = Object.keys(state.chats).length + 1;
+  state.chats[id] = { name: `Chat ${n}`, history: [SYSTEM_MSG] };
+  state.current = id;
+  persist(); render();
+  $("rename").focus(); $("rename").select();
+};
+
+$("delete-chat").onclick = () => {
+  if (Object.keys(state.chats).length <= 1) return;
+  delete state.chats[state.current];
+  state.current = Object.keys(state.chats)[0];
+  persist(); render();
+};
+
+$("rename").oninput = (e) => {
+  const name = e.target.value.trim();
+  if (!name) return;
+  state.chats[state.current].name = name;
+  persist();
+  document.querySelector(".chat-item.active").textContent = name;
+};
+
+$("save").onclick = () => {
+  const blob = new Blob([JSON.stringify(state.chats, null, 2)], { type: "application/json" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = "saved_chats.json";
+  a.click();
+  URL.revokeObjectURL(a.href);
+};
+
+$("load").onclick = () => $("load-file").click();
+$("load-file").onchange = async (e) => {
+  const file = e.target.files[0];
+  e.target.value = "";
+  if (!file) return;
+  try {
+    const chats = JSON.parse(await file.text());
+    const ids = Object.keys(chats);
+    if (!ids.length || !ids.every((id) => Array.isArray(chats[id]?.history))) throw new Error("Not a saved chats file.");
+    state = { chats, current: ids[0] };
+    persist(); render();
+  } catch (err) {
+    alert("Failed to load: " + err.message);
+  }
+};
+
+$("input").addEventListener("keydown", (e) => {
+  if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); $("chat-form").requestSubmit(); }
+});
+
+$("chat-form").onsubmit = async (e) => {
+  e.preventDefault();
+  const text = $("input").value.trim();
+  if (!text) return;
+  const chatId = state.current;
+  const history = state.chats[chatId].history;
+  history.push({ role: "user", content: text });
+  $("input").value = "";
+  $("send").disabled = true;
+  persist(); render();
+
+  let reply;
+  try {
+    const res = await fetch("/api/chat", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ messages: history.filter((m) => !m.error) }),
+    });
+    const data = await res.json().catch(() => ({ error: `Server returned ${res.status}` }));
+    reply = res.ok ? { role: "assistant", content: data.reply } : { role: "assistant", content: "Error: " + data.error, error: true };
+  } catch (err) {
+    reply = { role: "assistant", content: "Error: " + err.message, error: true };
+  }
+  if (state.chats[chatId]) state.chats[chatId].history.push(reply);
+  $("send").disabled = false;
+  persist(); render();
+};
+
+render();
+</script>
+</body>
+</html>
